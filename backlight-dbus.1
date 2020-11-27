@@ -1,0 +1,79 @@
+.TH backlight-dbus 1 "NOVEMBER 2020" Linux "User Manuals"
+
+.SH NAME
+backlight-dbus \- a backlight controller using DBus
+
+.SH SYNOPSIS
+.B backlight-dbus
+.RB [\-h ]
+.RB [\-v ]
+.RB [\-d
+.IR device_name ]
+.RB [\-x
+.IR session_id ]
+.RB [\-t
+.IR countdown ]
+.RB [\fIbrightness\fP]
+
+.SH DESCRIPTION
+\fIbacklight-dbus\fP is a small utility to adjust the backlight brightness of a
+monitor using the DBus interface of systemd-logind. When called with no arguments,
+the current and maximum brightness levels are printed.
+
+.SH OPTIONS
+.TP
+.B \-h
+Show help message.
+.TP
+.B \-v
+Enable verbose output (debug messages).
+.TP
+.BI \-d\ \fIdevice_name\fP
+The device name to control. This is a folder (usually a symlink) in
+\fI/sys/class/backlight/\fP. If not specified, the first folder found
+will be used.
+.TP
+.BI \-x\ \fIsession_id\fP
+The systemd-logind session ID of the current user. If not specified,
+the environment variable XDG_SESSION_ID is first checked, and then
+a list of all sessions is checked.
+.TP
+.BI \-t\ \fIcountdown\fP
+The number of seconds over which the brightness should fade. This can
+be a floating point number.
+.TP
+.BI \fIbrightness\fP
+This can be one of:
+.RS 4
+.IP \[bu] 3
+An absolute number, like the value in \fI/sys/class/backlight/<device_name>/brightness\fP.
+.IP \[bu]
+A plus (+) or minus (-) sign followed by an absolute number. The number will be
+added/subtracted from the current brightness value.
+.IP \[bu]
+A number followed by a percent sign (%). The brightness will be set to this
+percentage of the maximum value.
+
+The +/- signs and the % sign may be combined together.
+.RE
+
+.SH EXAMPLES
+$ backlight-dbus -d acpi_video0 15
+
+$ backlight-dbus -200
+
+$ backlight-dbus -t 3.5 75%
+
+$ backlight-dbus -10%
+
+.SH NOTES
+Currently, the program will run for longer than the specified countdown
+because the time it takes to wait for a DBus method call to return is
+not accounted for.
+
+.SH SEE ALSO
+.IR xbacklight(1)
+\- adjust backlight brightness using RandR extension
+
+.SH AUTHOR
+Max Erenberg
