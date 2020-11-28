@@ -263,7 +263,6 @@ int main(int argc, char *argv[]) {
                  num_steps,
                  delay_ms = 200;
     int status = 0,
-        ch,
         brightness_change;
     double countdown_sec;
     struct timespec delay_ts = {
@@ -272,32 +271,40 @@ int main(int argc, char *argv[]) {
     };
 
     // Parse arguments
-    while ((ch = getopt(argc, argv, "s:d:x:t:vh")) != -1) {
-        switch (ch) {
+    for (int i = 1; i < argc;) {
+        int opt_len = strlen(argv[i]);
+        if (argv[i][0] != '-') {
+            if (brightness_str) goto bad_args;
+            brightness_str = argv[i++];
+            continue;
+        }
+        if (opt_len < 2) goto bad_args;
+        if (argv[i][1] == 'h') goto show_usage;
+        if (argv[i][1] == 'v') {
+            debug_on = true;
+            i++;
+            continue;
+        }
+        if (!brightness_str && argv[i][1] >= '0' && argv[i][1] <= '9') {
+            brightness_str = argv[i++];
+            continue;
+        }
+        if (opt_len != 2) goto bad_args;
+        if (i == argc-1) goto bad_args;
+        switch (argv[i][1]) {
             case 'd':
-                device_name = optarg;
+                device_name = argv[i+1];
                 break;
             case 'x':
-                xdg_session_id = optarg;
+                xdg_session_id = argv[i+1];
                 break;
             case 't':
-                countdown_str = optarg;
+                countdown_str = argv[i+1];
                 break;
-            case 'v':
-                debug_on = true;
-                break;
-            case 'h':
-                goto show_usage;
             default:
-                status = -1;
-                goto show_usage;
+                goto bad_args;
         }
-    }
-    if (optind == argc - 1) {
-        brightness_str = argv[optind];
-    } else if (optind < argc - 1) {
-        status = -1;
-        goto show_usage;
+        i += 2;
     }
 
     // Find device name
@@ -414,6 +421,8 @@ int main(int argc, char *argv[]) {
     }
 
     if (0) {
+bad_args:
+        status = -1;
 show_usage:
         LOG_ERROR(usage_fmt_str, argv[0]);
         goto finish;
