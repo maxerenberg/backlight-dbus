@@ -9,7 +9,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/limits.h>
 #include <systemd/sd-bus.h>
 
 static bool debug_on = false;
@@ -17,6 +16,8 @@ static bool received_signal = false;
 
 #define LOG_INFO(args...) if (debug_on) fprintf(stderr, args)
 #define LOG_ERROR(args...) fprintf(stderr, args)
+#define NAME_MAX 255
+#define PATH_MAX 4096
 
 void log_method_call_failed(const sd_bus_error *error) {
     LOG_ERROR("Failed to issue method call: %s\n", error->message);
