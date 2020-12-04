@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall
 OBJECTS = backlight-dbus.o
 EXEC = backlight-dbus
-PREFIX := ~/.local
+PREFIX = ~/.local
 
 .PHONY: all clean install uninstall
 

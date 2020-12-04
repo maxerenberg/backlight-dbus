@@ -31,10 +31,11 @@ void signal_handler(int signum) {
     received_signal = true;
 }
 
-int get_xdg_session_id(sd_bus *bus, const char ** result) {
+int get_xdg_session_id(sd_bus *bus, char **result, bool *should_free) {
     char *xdg_session_id = getenv("XDG_SESSION_ID");
     if (xdg_session_id) {
         *result = xdg_session_id;
+        *should_free = false;
         return 0;
     }
     LOG_INFO("XDG_SESSION_ID not set, iterating "
@@ -69,7 +70,8 @@ int get_xdg_session_id(sd_bus *bus, const char ** result) {
             break;
         }
         if (user_id == uid && seat_id[0] != '\0') {
-            *result = session_id;
+            *result = strdup(session_id);
+            *should_free = true;
             break;
         }
     }
@@ -255,9 +257,10 @@ int main(int argc, char *argv[]) {
     sd_bus *bus = NULL;
     const char *device_name = NULL,
                *session_object_path = NULL,
-               *xdg_session_id = NULL,
                *brightness_str = NULL,
                *countdown_str = NULL;
+    char *xdg_session_id = NULL;
+    bool should_free_session_id = false;
     unsigned int cur_brightness,
                  max_brightness,
                  brightness,
@@ -360,7 +363,8 @@ int main(int argc, char *argv[]) {
 
     // Get session ID for user
     if (xdg_session_id == NULL) {
-        status = get_xdg_session_id(bus, &xdg_session_id);
+        status = get_xdg_session_id(bus, &xdg_session_id,
+                                    &should_free_session_id);
         if (status < 0) {
             goto finish;
         }
@@ -377,6 +381,9 @@ int main(int argc, char *argv[]) {
                                 &get_session_msg,
                                 "s",
                                 xdg_session_id);
+    if (should_free_session_id) {
+        free(xdg_session_id);
+    }
     if (status < 0) {
         goto method_failed;
     }
