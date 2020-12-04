@@ -215,6 +215,7 @@ int setup_signal_handler() {
     int signals_to_catch[] = {SIGHUP, SIGINT, SIGTERM};
     act.sa_handler = signal_handler;
     sigemptyset(&act.sa_mask);
+    act.sa_flags = 0;
     for (int i = 0; i < 3; i++) {
         if (sigaction(signals_to_catch[i], &act, NULL) < 0) {
             perror("sigaction");
@@ -226,7 +227,7 @@ int setup_signal_handler() {
 
 int set_brightness(
         sd_bus *bus, const char *session_object_path, sd_bus_error *error,
-        sd_bus_message *msg, const char *device_name, unsigned int brightness)
+        const char *device_name, unsigned int brightness)
 {
     return sd_bus_call_method(bus,
                               "org.freedesktop.login1",
@@ -234,7 +235,7 @@ int set_brightness(
                               "org.freedesktop.login1.Session",
                               "SetBrightness",
                               error,
-                              &msg,
+                              NULL,
                               "ssu",
                               "backlight",
                               device_name,
@@ -250,8 +251,7 @@ int main(int argc, char *argv[]) {
           "  -v                 enable debug output\n"
           "  -h                 show help message and quit\n";
     sd_bus_error error = SD_BUS_ERROR_NULL;
-    sd_bus_message *get_session_msg = NULL,
-                   *set_brightness_msg = NULL;
+    sd_bus_message *get_session_msg = NULL;
     sd_bus *bus = NULL;
     const char *device_name = NULL,
                *session_object_path = NULL,
@@ -401,8 +401,8 @@ int main(int argc, char *argv[]) {
             if (received_signal) {
                 LOG_INFO("Received signal, restoring original brightness\n");
                 status = set_brightness(
-                    bus, session_object_path, &error, set_brightness_msg,
-                    device_name, cur_brightness);
+                    bus, session_object_path, &error, device_name,
+                    cur_brightness);
                 if (status < 0) {
                     goto method_failed;
                 }
@@ -414,8 +414,8 @@ int main(int argc, char *argv[]) {
         unsigned int intermediate_brightness
             = cur_brightness + brightness_change * ((double)i / num_steps);
         status = set_brightness(
-            bus, session_object_path, &error, set_brightness_msg,
-            device_name, intermediate_brightness);
+            bus, session_object_path, &error, device_name,
+            intermediate_brightness);
         if (status < 0) {
             goto method_failed;
         }
@@ -437,7 +437,6 @@ parse_failed:
 finish:
     sd_bus_error_free(&error);
     sd_bus_message_unref(get_session_msg);
-    sd_bus_message_unref(set_brightness_msg);
     sd_bus_unref(bus);
 
     return status < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
