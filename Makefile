@@ -9,7 +9,7 @@ PREFIX = ~/.local
 all: backlight-dbus
 
 backlight-dbus: ${OBJECTS}
-		${CC} -o ${EXEC} ${OBJECTS} -lm -lsystemd
+		${CC} -o ${EXEC} ${OBJECTS} -lsystemd
 
 clean:
 		rm -f *.o ${EXEC}

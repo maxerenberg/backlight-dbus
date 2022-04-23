@@ -1,7 +1,6 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
-#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -9,15 +8,20 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
 #include <systemd/sd-bus.h>
 
 static bool debug_on = false;
-static bool received_signal = false;
+static volatile sig_atomic_t received_signal = false;
 
 #define LOG_INFO(args...) if (debug_on) fprintf(stderr, args)
 #define LOG_ERROR(args...) fprintf(stderr, args)
 #define NAME_MAX 255
 #define PATH_MAX 4096
+#define NANOSEC_PER_SEC 1000000000LL
+#define NANOSEC_PER_MILLISEC 1000000LL
+#define MILLISEC_PER_SEC 1000
+#define SLEEP_MILLIS 100
 
 void log_method_call_failed(const sd_bus_error *error) {
     LOG_ERROR("Failed to issue method call: %s\n", error->message);
@@ -91,7 +95,7 @@ finish:
 }
 
 int read_value_from_file(char *dir, size_t dir_len, size_t dir_cap,
-                         const char *filename, unsigned int *res)
+                         const char *filename, int *res)
 {
     // Make sure we have enough space in our buffer to copy
     if (strlen(filename) > dir_cap-dir_len-1) {
@@ -104,7 +108,7 @@ int read_value_from_file(char *dir, size_t dir_len, size_t dir_cap,
         LOG_ERROR("Could not open file %s\n", dir);
         return -1;
     }
-    int num_read = fscanf(fi, "%u", res);
+    int num_read = fscanf(fi, "%d", res);
     fclose(fi);
     if (num_read != 1) {
         LOG_ERROR("Error reading value from file %s\n", dir);
@@ -135,8 +139,8 @@ int get_device(const char ** res) {
     return 0;
 }
 
-int read_brightness(const char *device_name, unsigned int *cur_brightness,
-                    unsigned int *max_brightness)
+int read_brightness(const char *device_name, int *cur_brightness,
+                    int *max_brightness)
 {
     char dir[PATH_MAX];
     int size = snprintf(dir, sizeof(dir), "/sys/class/backlight/%s/", device_name);
@@ -157,13 +161,13 @@ int read_brightness(const char *device_name, unsigned int *cur_brightness,
     return 0;
 }
 
-int calculate_brightness(const char *brightness_str, unsigned int cur_brightness,
-                         unsigned int max_brightness, unsigned int *res)
-{
+int calculate_target_brightness(
+    const char *brightness_str, int cur_brightness, int max_brightness, int *res
+) {
     int len = strlen(brightness_str);
     char prefix = 0;
     bool has_percent = false;
-    unsigned int brightness;
+    int brightness;
     char *endptr;
     if (brightness_str[0] == '-' || brightness_str[0] == '+') {
         prefix = brightness_str[0];
@@ -197,19 +201,40 @@ int calculate_brightness(const char *brightness_str, unsigned int cur_brightness
     return 0;
 }
 
-int read_countdown(const char *s, double *res)
-{
+int read_countdown(const char *s, float *res) {
+    if (s == NULL) {
+        *res = 0;
+        return 0;
+    }
     char *endptr;
-    double f = 0;
-    if (s != NULL) {
-        f = strtod(s, &endptr);
-        if (endptr == s || *endptr != '\0' || f < 0) {
-            LOG_ERROR("Invalid format for countdown\n");
-            return -1;
-        }
+    float f = strtof(s, &endptr);
+    if (endptr == s || *endptr != '\0' || f < 0) {
+        LOG_ERROR("Invalid format for countdown\n");
+        return -1;
     }
     *res = f;
     return 0;
+}
+
+void add_nanoseconds_to_timespec(const struct timespec *in_ts, long nanosecs, struct timespec *out_ts) {
+    out_ts->tv_sec = in_ts->tv_sec;
+    out_ts->tv_nsec = in_ts->tv_nsec + nanosecs;
+    out_ts->tv_sec += out_ts->tv_nsec / NANOSEC_PER_SEC;
+    out_ts->tv_nsec %= NANOSEC_PER_SEC;
+}
+
+int timespec_cmp(const struct timespec *a, const struct timespec *b) {
+    if (a->tv_sec < b->tv_sec) return -1;
+    if (a->tv_sec > b->tv_sec) return 1;
+    if (a->tv_nsec < b->tv_nsec) return -1;
+    if (a->tv_nsec > b->tv_nsec) return 1;
+    return 0;
+}
+
+int timespec_diff_in_millis(const struct timespec *a, const struct timespec *b) {
+    int sec_diff = a->tv_sec - b->tv_sec;
+    long nsec_diff = a->tv_nsec - b->tv_nsec;
+    return sec_diff * MILLISEC_PER_SEC + nsec_diff / NANOSEC_PER_MILLISEC;
 }
 
 int setup_signal_handler() {
@@ -229,8 +254,9 @@ int setup_signal_handler() {
 
 int set_brightness(
         sd_bus *bus, const char *session_object_path, sd_bus_error *error,
-        const char *device_name, unsigned int brightness)
+        const char *device_name, int brightness)
 {
+    //LOG_INFO("Setting brightness to %d\n", brightness);
     return sd_bus_call_method(bus,
                               "org.freedesktop.login1",
                               session_object_path,
@@ -241,7 +267,7 @@ int set_brightness(
                               "ssu",
                               "backlight",
                               device_name,
-                              brightness);
+                              (unsigned int)brightness);
 }
 
 int main(int argc, char *argv[]) {
@@ -261,18 +287,18 @@ int main(int argc, char *argv[]) {
                *countdown_str = NULL;
     char *xdg_session_id = NULL;
     bool should_free_session_id = false;
-    unsigned int cur_brightness,
-                 max_brightness,
-                 brightness,
-                 num_steps,
-                 delay_ms = 200;
-    int status = 0,
-        brightness_change;
-    double countdown_sec;
+    int orig_brightness,
+        cur_brightness,
+        max_brightness,
+        target_brightness;
     struct timespec delay_ts = {
         .tv_sec = 0,
-        .tv_nsec = delay_ms * 1e6
+        .tv_nsec = SLEEP_MILLIS * 1000
     };
+    int status = 0;
+    float countdown_sec;
+    struct timespec current_time,
+                    target_time;
 
     // Parse arguments
     for (int i = 1; i < argc;) {
@@ -325,6 +351,7 @@ int main(int argc, char *argv[]) {
     if (status < 0) {
         goto finish;
     }
+    orig_brightness = cur_brightness;
 
     if (brightness_str == NULL) {
         // Just print current values
@@ -333,26 +360,23 @@ int main(int argc, char *argv[]) {
     }
 
     // Calculate desired brightness
-    status = calculate_brightness(
-        brightness_str, cur_brightness, max_brightness, &brightness);
+    status = calculate_target_brightness(
+        brightness_str, cur_brightness, max_brightness, &target_brightness);
     if (status < 0) {
         goto finish;
     }
-    brightness_change = (int)brightness - (int)cur_brightness;
-    LOG_INFO("New brightness will be %u\n", brightness);
+    LOG_INFO("New brightness will be %u\n", target_brightness);
 
     // Calculate countdown
     status = read_countdown(countdown_str, &countdown_sec);
     if (status < 0) {
         goto finish;
     }
-    num_steps = ceil(countdown_sec * 1000 / delay_ms);
-    if (num_steps == 0) {
-        // No countdown is equivalent to one step with delay 0
-        num_steps = 1;
-        delay_ts.tv_nsec = 0;
+    if (clock_gettime(CLOCK_BOOTTIME, &current_time) < 0) {
+        perror("clock_gettime");
+        goto finish;
     }
-    LOG_INFO("Number of steps: %u\n", num_steps);
+    add_nanoseconds_to_timespec(&current_time, (long)(countdown_sec * NANOSEC_PER_SEC), &target_time);
 
     // Connect to the system bus
     status = sd_bus_open_system(&bus);
@@ -402,14 +426,14 @@ int main(int argc, char *argv[]) {
     }
 
     // Set the brightness
-    for (unsigned int i = 1; i <= num_steps; i++) {
+    while (timespec_cmp(&current_time, &target_time) < 0) {
         status = nanosleep(&delay_ts, NULL);
         if (status < 0) {
             if (received_signal) {
                 LOG_INFO("Received signal, restoring original brightness\n");
                 status = set_brightness(
                     bus, session_object_path, &error, device_name,
-                    cur_brightness);
+                    orig_brightness);
                 if (status < 0) {
                     goto method_failed;
                 }
@@ -418,11 +442,26 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-        unsigned int intermediate_brightness
-            = cur_brightness + brightness_change * ((double)i / num_steps);
+        int millis_remaining = timespec_diff_in_millis(&target_time, &current_time);
+        int iterations_remaining = millis_remaining / SLEEP_MILLIS;
+        if (iterations_remaining == 0) break;
+        int brightness_remaining = target_brightness - cur_brightness;
+        int next_brightness = cur_brightness + brightness_remaining / iterations_remaining;
+        if (next_brightness != cur_brightness) {
+            status = set_brightness(
+                bus, session_object_path, &error, device_name, next_brightness);
+            if (status < 0) {
+                goto method_failed;
+            }
+        }
+        cur_brightness = next_brightness;
+        clock_gettime(CLOCK_BOOTTIME, &current_time);
+    }
+
+    // We might need one more step
+    if (!received_signal && cur_brightness != target_brightness) {
         status = set_brightness(
-            bus, session_object_path, &error, device_name,
-            intermediate_brightness);
+            bus, session_object_path, &error, device_name, target_brightness);
         if (status < 0) {
             goto method_failed;
         }
