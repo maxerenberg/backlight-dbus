@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -11,9 +12,6 @@
 
 #include <systemd/sd-bus.h>
 
-static bool debug_on = false;
-static volatile sig_atomic_t received_signal = false;
-
 #define LOG_INFO(args...) if (debug_on) fprintf(stderr, args)
 #define LOG_ERROR(args...) fprintf(stderr, args)
 #define NAME_MAX 255
@@ -22,6 +20,11 @@ static volatile sig_atomic_t received_signal = false;
 #define NANOSEC_PER_MILLISEC 1000000LL
 #define MILLISEC_PER_SEC 1000
 #define SLEEP_MILLIS 100
+
+static bool debug_on = false;
+static volatile sig_atomic_t received_signal = false;
+static int signals_to_catch[] = {SIGHUP, SIGINT, SIGTERM, 0};
+static sigset_t signals_to_catch_set;
 
 void log_method_call_failed(const sd_bus_error *error) {
     LOG_ERROR("Failed to issue method call: %s\n", error->message);
@@ -237,13 +240,12 @@ int timespec_diff_in_millis(const struct timespec *a, const struct timespec *b) 
     return sec_diff * MILLISEC_PER_SEC + nsec_diff / NANOSEC_PER_MILLISEC;
 }
 
-int setup_signal_handler() {
+int setup_signal_handler(void) {
     struct sigaction act;
-    int signals_to_catch[] = {SIGHUP, SIGINT, SIGTERM};
     act.sa_handler = signal_handler;
     sigemptyset(&act.sa_mask);
     act.sa_flags = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; signals_to_catch[i] != 0; i++) {
         if (sigaction(signals_to_catch[i], &act, NULL) < 0) {
             perror("sigaction");
             return -1;
@@ -252,12 +254,41 @@ int setup_signal_handler() {
     return 0;
 }
 
+void initialize_signals_to_catch_set(void) {
+    sigset_t *set = &signals_to_catch_set;
+    sigemptyset(set);
+    for (int i = 0; signals_to_catch[i] != 0; i++) {
+        sigaddset(set, signals_to_catch[i]);
+    }
+}
+
+int block_signals(void) {
+    if (sigprocmask(SIG_BLOCK, &signals_to_catch_set, NULL) < 0) {
+        perror("sigprocmask");
+        return -1;
+    }
+    return 0;
+}
+
+int unblock_signals(void) {
+    if (sigprocmask(SIG_UNBLOCK, &signals_to_catch_set, NULL) < 0) {
+        perror("sigprocmask");
+        return -1;
+    }
+    return 0;
+}
+
 int set_brightness(
         sd_bus *bus, const char *session_object_path, sd_bus_error *error,
         const char *device_name, int brightness)
 {
-    //LOG_INFO("Setting brightness to %d\n", brightness);
-    return sd_bus_call_method(bus,
+    // For some reason the DBus library doesn't seem to be able to
+    // send messages anymore once it gets interrupted by one of the
+    // termination signals. This is a problem for us because we want to
+    // restore the original brightness after such a signal is received.
+    // So we will block those signals when sending a message.
+    block_signals();
+    int ret = sd_bus_call_method(bus,
                               "org.freedesktop.login1",
                               session_object_path,
                               "org.freedesktop.login1.Session",
@@ -268,6 +299,8 @@ int set_brightness(
                               "backlight",
                               device_name,
                               (unsigned int)brightness);
+    unblock_signals();
+    return ret;
 }
 
 int main(int argc, char *argv[]) {
@@ -424,20 +457,13 @@ int main(int argc, char *argv[]) {
     if (status < 0) {
         goto finish;
     }
+    initialize_signals_to_catch_set();
 
     // Set the brightness
-    while (timespec_cmp(&current_time, &target_time) < 0) {
+    while (timespec_cmp(&current_time, &target_time) < 0 && !received_signal) {
         status = nanosleep(&delay_ts, NULL);
         if (status < 0) {
-            if (received_signal) {
-                LOG_INFO("Received signal, restoring original brightness\n");
-                status = set_brightness(
-                    bus, session_object_path, &error, device_name,
-                    orig_brightness);
-                if (status < 0) {
-                    goto method_failed;
-                }
-            } else {
+            if (!received_signal) {
                 perror("nanosleep");
             }
             break;
@@ -451,6 +477,10 @@ int main(int argc, char *argv[]) {
             status = set_brightness(
                 bus, session_object_path, &error, device_name, next_brightness);
             if (status < 0) {
+                if (sd_bus_error_get_errno(&error) == EINTR) {
+                    // received_signal will be true
+                    break;
+                }
                 goto method_failed;
             }
         }
@@ -458,8 +488,19 @@ int main(int argc, char *argv[]) {
         clock_gettime(CLOCK_BOOTTIME, &current_time);
     }
 
-    // We might need one more step
-    if (!received_signal && cur_brightness != target_brightness) {
+    block_signals();
+
+    if (received_signal) {
+        LOG_INFO("Received signal, restoring original brightness\n");
+        if (cur_brightness != orig_brightness) {
+            status = set_brightness(
+                bus, session_object_path, &error, device_name, orig_brightness);
+            if (status < 0) {
+                goto method_failed;
+            }
+        }
+    } else if (cur_brightness != target_brightness) {
+        // We might need one more step
         status = set_brightness(
             bus, session_object_path, &error, device_name, target_brightness);
         if (status < 0) {
@@ -483,7 +524,7 @@ parse_failed:
 finish:
     sd_bus_error_free(&error);
     sd_bus_message_unref(get_session_msg);
-    sd_bus_unref(bus);
+    sd_bus_close_unref(bus);
 
     return status < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
