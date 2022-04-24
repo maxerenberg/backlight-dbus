@@ -1,6 +1,5 @@
 #include <ctype.h>
 #include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -460,7 +459,7 @@ int main(int argc, char *argv[]) {
     initialize_signals_to_catch_set();
 
     // Set the brightness
-    while (timespec_cmp(&current_time, &target_time) < 0 && !received_signal) {
+    while (!received_signal && timespec_cmp(&current_time, &target_time) < 0) {
         status = nanosleep(&delay_ts, NULL);
         if (status < 0) {
             if (!received_signal) {
@@ -477,18 +476,12 @@ int main(int argc, char *argv[]) {
             status = set_brightness(
                 bus, session_object_path, &error, device_name, next_brightness);
             if (status < 0) {
-                if (sd_bus_error_get_errno(&error) == EINTR) {
-                    // received_signal will be true
-                    break;
-                }
                 goto method_failed;
             }
         }
         cur_brightness = next_brightness;
         clock_gettime(CLOCK_BOOTTIME, &current_time);
     }
-
-    block_signals();
 
     if (received_signal) {
         LOG_INFO("Received signal, restoring original brightness\n");
