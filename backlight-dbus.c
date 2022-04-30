@@ -461,6 +461,7 @@ int main(int argc, char *argv[]) {
     // Set the brightness
     while (!received_signal && timespec_cmp(&current_time, &target_time) < 0) {
         status = nanosleep(&delay_ts, NULL);
+        clock_gettime(CLOCK_BOOTTIME, &current_time);
         if (status < 0) {
             if (!received_signal) {
                 perror("nanosleep");
@@ -469,7 +470,7 @@ int main(int argc, char *argv[]) {
         }
         int millis_remaining = timespec_diff_in_millis(&target_time, &current_time);
         int iterations_remaining = millis_remaining / SLEEP_MILLIS;
-        if (iterations_remaining == 0) break;
+        if (iterations_remaining <= 0) break;
         int brightness_remaining = target_brightness - cur_brightness;
         int next_brightness = cur_brightness + brightness_remaining / iterations_remaining;
         if (next_brightness != cur_brightness) {
@@ -480,7 +481,6 @@ int main(int argc, char *argv[]) {
             }
         }
         cur_brightness = next_brightness;
-        clock_gettime(CLOCK_BOOTTIME, &current_time);
     }
 
     if (received_signal) {
