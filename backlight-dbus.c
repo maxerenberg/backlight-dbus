@@ -323,13 +323,16 @@ int main(int argc, char *argv[]) {
         cur_brightness,
         max_brightness,
         target_brightness;
+    // TODO: use dynamic delay to prevent clock drift
     struct timespec delay_ts = {
         .tv_sec = 0,
         .tv_nsec = SLEEP_MILLIS * 1000
     };
     int status = 0;
     float countdown_sec;
-    struct timespec current_time,
+    int total_millis;
+    struct timespec start_time,
+                    current_time,
                     target_time;
 
     // Parse arguments
@@ -404,6 +407,7 @@ int main(int argc, char *argv[]) {
     if (status < 0) {
         goto finish;
     }
+    total_millis = countdown_sec * MILLISEC_PER_SEC;
     if (clock_gettime(CLOCK_BOOTTIME, &current_time) < 0) {
         perror("clock_gettime");
         goto finish;
@@ -459,6 +463,7 @@ int main(int argc, char *argv[]) {
     initialize_signals_to_catch_set();
 
     // Set the brightness
+    memcpy(&start_time, &current_time, sizeof(start_time));
     while (!received_signal && timespec_cmp(&current_time, &target_time) < 0) {
         status = nanosleep(&delay_ts, NULL);
         clock_gettime(CLOCK_BOOTTIME, &current_time);
@@ -468,19 +473,19 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-        int millis_remaining = timespec_diff_in_millis(&target_time, &current_time);
-        int iterations_remaining = millis_remaining / SLEEP_MILLIS;
-        if (iterations_remaining <= 0) break;
-        int brightness_remaining = target_brightness - cur_brightness;
-        int next_brightness = cur_brightness + brightness_remaining / iterations_remaining;
+        int millis_elapsed = timespec_diff_in_millis(&current_time, &start_time);
+        if (millis_elapsed >= total_millis) break;
+        // next = (1 - (millis_elapsed / total_millis)) * orig_brightness
+        //      = orig_brightness - (millis_elapsed * orig_brightness) / total_millis
+        int next_brightness = (int)(orig_brightness - ((int64_t)millis_elapsed * orig_brightness) / total_millis);
         if (next_brightness != cur_brightness) {
             status = set_brightness(
                 bus, session_object_path, &error, device_name, next_brightness);
             if (status < 0) {
                 goto method_failed;
             }
+            cur_brightness = next_brightness;
         }
-        cur_brightness = next_brightness;
     }
 
     if (received_signal) {
