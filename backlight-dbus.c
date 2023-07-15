@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <systemd/sd-bus.h>
+#include <systemd/sd-login.h>
 
 #define LOG_INFO(args...) if (debug_on) fprintf(stderr, args)
 #define LOG_ERROR(args...) fprintf(stderr, args)
@@ -44,56 +45,15 @@ int get_xdg_session_id(sd_bus *bus, char **result, bool *should_free) {
         *should_free = false;
         return 0;
     }
-    LOG_INFO("XDG_SESSION_ID not set, iterating "
-             "over all sessions instead...\n");
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    sd_bus_message *msg = NULL;
-    // Iterate over active sessions and try to find one for the current user
-    int status = sd_bus_call_method(
-        bus, "org.freedesktop.login1", "/org/freedesktop/login1",
-        "org.freedesktop.login1.Manager", "ListSessions",
-        &error, &msg, NULL);
-    if (status < 0) {
-        goto method_failed;
+    LOG_INFO("XDG_SESSION_ID not set, retrieving the primary session "
+             "of the current user instead...\n");
+    int sd_ret = sd_uid_get_display(getuid(), result);
+    if (sd_ret < 0) {
+        LOG_ERROR("Failed to retrieve primary session ID: %d\n", sd_ret);
+        return sd_ret;
     }
-    status = sd_bus_message_enter_container(msg, 'a', "(susso)");
-    if (status < 0) {
-        goto parse_failed;
-    }
-    unsigned int uid = getuid();
-    for (;;) {
-        const char *session_id, *seat_id;
-        unsigned int user_id;
-        status = sd_bus_message_read(
-            msg, "(susso)", &session_id, &user_id, NULL, &seat_id, NULL);
-        if (status < 0) {
-            sd_bus_message_exit_container(msg);
-            goto parse_failed;
-        }
-        if (status == 0) {
-            LOG_ERROR("Could not find session with seat for user %u\n", uid);
-            status = -1;
-            break;
-        }
-        if (user_id == uid && seat_id[0] != '\0') {
-            *result = strdup(session_id);
-            *should_free = true;
-            break;
-        }
-    }
-    sd_bus_message_exit_container(msg);
-    if (0) {
-method_failed:
-        log_method_call_failed(&error);
-        goto finish;
-parse_failed:
-        log_parse_failed(status);
-        goto finish;
-    }
-finish:
-    sd_bus_error_free(&error);
-    sd_bus_message_unref(msg);
-    return status;
+    *should_free = true;
+    return 0;
 }
 
 int read_value_from_file(char *dir, size_t dir_len, size_t dir_cap,

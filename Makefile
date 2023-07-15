@@ -8,18 +8,18 @@ PREFIX = ~/.local
 
 all: backlight-dbus
 
-backlight-dbus: ${OBJECTS}
+${EXEC}: ${OBJECTS}
 		${CC} -o ${EXEC} ${OBJECTS} -lsystemd
 
 clean:
 		rm -f *.o ${EXEC}
 
 install:
-		install -D -t ${PREFIX}/bin/ backlight-dbus
+		install -D -t ${PREFIX}/bin/ ${EXEC}
 		install -D -t ${PREFIX}/share/man/man1/ backlight-dbus.1
 		mandb -q
 
 uninstall:
-		rm -f ${PREFIX}/bin/backlight-dbus
+		rm -f ${PREFIX}/bin/${EXEC}
 		rm -f ${PREFIX}/share/man/man1/backlight-dbus.1
 		mandb -q
