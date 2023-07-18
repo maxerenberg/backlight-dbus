@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall
+CFLAGS = -Wall -Wextra -Wno-unused-parameter
 OBJECTS = backlight-dbus.o
 EXEC = backlight-dbus
 PREFIX = ~/.local

@@ -10,7 +10,6 @@
 #include <unistd.h>
 
 #include <systemd/sd-bus.h>
-#include <systemd/sd-login.h>
 
 #define LOG_INFO(args...) if (debug_on) fprintf(stderr, args)
 #define LOG_ERROR(args...) fprintf(stderr, args)
@@ -38,21 +37,43 @@ void signal_handler(int signum) {
     received_signal = true;
 }
 
-int get_xdg_session_id(sd_bus *bus, char **result, bool *should_free) {
+static int get_session_path(sd_bus *bus, char **result) {
     char *xdg_session_id = getenv("XDG_SESSION_ID");
     if (xdg_session_id) {
-        *result = xdg_session_id;
-        *should_free = false;
-        return 0;
+        LOG_INFO("Found XDG_SESSION_ID=%s\n", xdg_session_id);
+        // Get the session path
+        sd_bus_error error = SD_BUS_ERROR_NULL;
+        sd_bus_message *get_session_msg = NULL;
+        int status = sd_bus_call_method(
+            bus,
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "GetSession",
+            &error,
+            &get_session_msg,
+            "s",
+            xdg_session_id);
+        if (status < 0) {
+            log_method_call_failed(&error);
+            sd_bus_error_free(&error);
+            return status;
+        }
+        // Parse the response message
+        char *session_object_path = NULL;
+        status = sd_bus_message_read(get_session_msg, "o", &session_object_path);
+        if (status >= 0) {
+            *result = strdup(session_object_path);
+        }
+        sd_bus_message_unref(get_session_msg);
+        if (status < 0) {
+            log_parse_failed(status);
+            return status;
+        }
+    } else {
+        LOG_INFO("XDG_SESSION_ID not set, using auto session instead\n");
+        *result = strdup("/org/freedesktop/login1/session/auto");
     }
-    LOG_INFO("XDG_SESSION_ID not set, retrieving the primary session "
-             "of the current user instead...\n");
-    int sd_ret = sd_uid_get_display(getuid(), result);
-    if (sd_ret < 0) {
-        LOG_ERROR("Failed to retrieve primary session ID: %d\n", sd_ret);
-        return sd_ret;
-    }
-    *should_free = true;
     return 0;
 }
 
@@ -106,7 +127,7 @@ int read_brightness(const char *device_name, int *cur_brightness,
 {
     char dir[PATH_MAX];
     int size = snprintf(dir, sizeof(dir), "/sys/class/backlight/%s/", device_name);
-    if (size > sizeof(dir)-1) {
+    if (size > (int)sizeof(dir)-1) {
         LOG_ERROR("File path is too long\n");
         return -1;
     }
@@ -266,19 +287,15 @@ int main(int argc, char *argv[]) {
     static const char *usage_fmt_str
         = "Usage: %s [options] [brightness]\n\n"
           "  -d DEVICE_NAME     e.g. 'intel_backlight'\n"
-          "  -x XDG_SESSION_ID  session ID for current user\n"
           "  -t COUNTDOWN       countdown in seconds \n"
           "  -v                 enable debug output\n"
           "  -h                 show help message and quit\n";
     sd_bus_error error = SD_BUS_ERROR_NULL;
-    sd_bus_message *get_session_msg = NULL;
     sd_bus *bus = NULL;
     const char *device_name = NULL,
-               *session_object_path = NULL,
                *brightness_str = NULL,
                *countdown_str = NULL;
-    char *xdg_session_id = NULL;
-    bool should_free_session_id = false;
+    char *session_object_path = NULL;
     int orig_brightness,
         cur_brightness,
         max_brightness,
@@ -319,9 +336,6 @@ int main(int argc, char *argv[]) {
         switch (argv[i][1]) {
             case 'd':
                 device_name = argv[i+1];
-                break;
-            case 'x':
-                xdg_session_id = argv[i+1];
                 break;
             case 't':
                 countdown_str = argv[i+1];
@@ -381,37 +395,10 @@ int main(int argc, char *argv[]) {
         goto finish;
     }
 
-    // Get session ID for user
-    if (xdg_session_id == NULL) {
-        status = get_xdg_session_id(bus, &xdg_session_id,
-                                    &should_free_session_id);
-        if (status < 0) {
-            goto finish;
-        }
-    }
-    LOG_INFO("Session ID: %s\n", xdg_session_id);
-
-    // Get the session path
-    status = sd_bus_call_method(bus,
-                                "org.freedesktop.login1",
-                                "/org/freedesktop/login1",
-                                "org.freedesktop.login1.Manager",
-                                "GetSession",
-                                &error,
-                                &get_session_msg,
-                                "s",
-                                xdg_session_id);
-    if (should_free_session_id) {
-        free(xdg_session_id);
-    }
+    // Get session path
+    status = get_session_path(bus, &session_object_path);
     if (status < 0) {
-        goto method_failed;
-    }
-
-    // Parse the response message
-    status = sd_bus_message_read(get_session_msg, "o", &session_object_path);
-    if (status < 0) {
-        goto parse_failed;
+        goto finish;
     }
     LOG_INFO("Session object path: %s\n", session_object_path);
 
@@ -475,14 +462,13 @@ show_usage:
 method_failed:
         log_method_call_failed(&error);
         goto finish;
-parse_failed:
-        log_parse_failed(status);
-        goto finish;
     }
 finish:
     sd_bus_error_free(&error);
-    sd_bus_message_unref(get_session_msg);
     sd_bus_close_unref(bus);
+    if (session_object_path) {
+        free(session_object_path);
+    }
 
     return status < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }

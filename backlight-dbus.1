@@ -9,8 +9,6 @@ backlight-dbus \- a backlight controller using DBus
 .RB [\-v ]
 .RB [\-d
 .IR device_name ]
-.RB [\-x
-.IR session_id ]
 .RB [\-t
 .IR countdown ]
 .RB [\fIbrightness\fP]
@@ -33,11 +31,6 @@ The device name to control. This is a folder (usually a symlink) in
 \fI/sys/class/backlight/\fP. If not specified, the first folder found
 will be used.
 .TP
-.BI \-x\ \fIsession_id\fP
-The systemd-logind session ID of the current user. If not specified,
-the environment variable XDG_SESSION_ID is first checked, and then
-a list of all sessions is checked.
-.TP
 .BI \-t\ \fIcountdown\fP
 The number of seconds over which the brightness should fade. This can
 be a floating point number.
@@ -56,6 +49,11 @@ percentage of the maximum value.
 
 The +/- signs and the % sign may be combined together.
 .RE
+
+.SH ENVIRONMENT VARIABLES
+If the environment variable XDG_SESSION_ID is set, then it will be used to
+obtain the DBus session object path. Otherwise, the auto session path will
+be used instead.
 
 .SH EXAMPLES
 $ backlight-dbus -d acpi_video0 15
