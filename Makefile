@@ -1,25 +1,22 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -Wno-unused-parameter
-OBJECTS = backlight-dbus.o
+CFLAGS += -std=gnu11 -O2 -pipe -Wall -Wextra -Wno-unused-parameter
+LDFLAGS += -lsystemd
 EXEC = backlight-dbus
-PREFIX = ~/.local
+PREFIX ?= ~/.local
 
-.PHONY: all clean install uninstall
+.PHONY: clean install uninstall
 
-all: backlight-dbus
-
-${EXEC}: ${OBJECTS}
-		${CC} -o ${EXEC} ${OBJECTS} -lsystemd
+$(EXEC): backlight-dbus.c
+		$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
-		rm -f *.o ${EXEC}
+		$(RM) $(EXEC)
 
-install:
-		install -D -t ${PREFIX}/bin/ ${EXEC}
-		install -D -t ${PREFIX}/share/man/man1/ backlight-dbus.1
+install: $(EXEC)
+		install -D -t $(PREFIX)/bin/ $(EXEC)
+		install -D -t $(PREFIX)/share/man/man1/ backlight-dbus.1
 		mandb -q
 
 uninstall:
-		rm -f ${PREFIX}/bin/${EXEC}
-		rm -f ${PREFIX}/share/man/man1/backlight-dbus.1
+		$(RM) $(PREFIX)/bin/$(EXEC)
+		$(RM) $(PREFIX)/share/man/man1/backlight-dbus.1
 		mandb -q
